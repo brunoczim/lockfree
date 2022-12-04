@@ -8,16 +8,18 @@ use std::{
 
 /// A lock-free binary search tree that that currently only supports concurrent
 /// pushing with removal for now only working through a mutable reference.
-pub struct LockFreeBST<K, V> {
+pub struct BST<K, V> {
     head: AtomicPtr<TreeNode<K, V>>,
 }
 
-impl<K: Ord, V> LockFreeBST<K, V> {
+impl<K, V> BST<K, V> {
     /// Creates a new empty binary search tree.
-    pub fn new() -> LockFreeBST<K, V> {
-        LockFreeBST { head: AtomicPtr::new(ptr::null_mut()) }
+    pub fn new() -> BST<K, V> {
+        BST { head: AtomicPtr::new(ptr::null_mut()) }
     }
+}
 
+impl<K: Ord, V> BST<K, V> {
     /// Inserts a new key-value pair into the tree. If a value with the same key
     /// already exists it returns the old key-value pair.
     pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
@@ -97,7 +99,7 @@ impl<K: Ord, V> LockFreeBST<K, V> {
 
     /// Traverses the tree in sorted order and returns an iterator of owned
     /// values.
-    pub fn order_traversal(&self) -> impl Iterator<Item = (K, V)>
+    pub fn order_traversal(&self) -> impl std::iter::Iterator<Item = (K, V)>
     where
         K: Clone,
         V: Clone,
@@ -126,7 +128,7 @@ impl<K: Ord, V> LockFreeBST<K, V> {
     }
 
     /// Drains all elements of the tree and returns them sorted in an iterator.
-    pub fn drain(&mut self) -> impl Iterator<Item = (K, V)> {
+    pub fn drain(&mut self) -> impl std::iter::Iterator<Item = (K, V)> {
         let head = loop {
             let head = self.head.load(Ordering::Relaxed);
             match self.head.compare_exchange(
@@ -173,7 +175,13 @@ impl<K: Ord, V> LockFreeBST<K, V> {
     }
 }
 
-impl<K, V> Debug for LockFreeBST<K, V>
+impl<K, V> Default for BST<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, V> Debug for BST<K, V>
 where
     K: Debug,
     V: Debug,
@@ -181,14 +189,14 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let head = self.head.load(Ordering::Relaxed);
         if !head.is_null() {
-            unsafe { write!(f, "LockFreeBST {{ {:?} }}", *head) }
+            unsafe { write!(f, "BST {{ {:?} }}", *head) }
         } else {
-            write!(f, "LockFreeBST {{}}")
+            write!(f, "BST {{}}")
         }
     }
 }
 
-impl<K, V> Drop for LockFreeBST<K, V> {
+impl<K, V> Drop for BST<K, V> {
     fn drop(&mut self) {
         let mut stack: Vec<*mut TreeNode<K, V>> =
             vec![self.head.load(Ordering::Relaxed)];
@@ -203,6 +211,25 @@ impl<K, V> Drop for LockFreeBST<K, V> {
             }
         }
     }
+}
+
+unsafe impl<K, V> Send for BST<K, V>
+where
+    K: Send,
+    V: Send,
+{
+}
+
+unsafe impl<K, V> Sync for BST<K, V>
+where
+    K: Sync,
+    V: Sync,
+{
+}
+
+/// The borrowing iterator for BST
+pub struct Iterator<K, V> {
+    tree: BST<K, V>,
 }
 
 #[repr(align(2))]
@@ -272,7 +299,7 @@ mod bst_tests {
 
     #[test]
     fn insert_works() {
-        let tree = LockFreeBST::<i32, String>::new();
+        let tree = BST::<i32, String>::new();
         tree.insert(1, "ffs".into());
         tree.insert(4, "203".into());
 
@@ -309,7 +336,7 @@ mod bst_tests {
     #[test]
     fn no_leak_drop() {
         let drop_count = AtomicUsize::new(0);
-        let tree = LockFreeBST::<i32, CountOnDrop>::new();
+        let tree = BST::<i32, CountOnDrop>::new();
         tree.insert(1, CountOnDrop::from_ref(&drop_count));
         tree.insert(2, CountOnDrop::from_ref(&drop_count));
         tree.insert(5, CountOnDrop::from_ref(&drop_count));
@@ -325,7 +352,7 @@ mod bst_tests {
 
     #[test]
     fn drain() {
-        let mut tree = LockFreeBST::<i32, i32>::new();
+        let mut tree = BST::<i32, i32>::new();
         let expected = vec![(1, 1), (2, 2), (3, 3), (4, 4), (5, 5)];
 
         tree.insert(3, 3);
