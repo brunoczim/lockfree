@@ -6,48 +6,34 @@ use std::{
     vec,
 };
 
-#[derive(Debug)]
-pub struct Node<K, V> {
-    key: K,
-    value: V,
-    left: AtomicPtr<Node<K, V>>,
-    right: AtomicPtr<Node<K, V>>,
-}
-
-impl<K: Ord, V> Node<K, V> {
-    pub fn new(key: K, value: V) -> Node<K, V> {
-        Node {
-            key,
-            value,
-            left: AtomicPtr::new(ptr::null_mut()),
-            right: AtomicPtr::new(ptr::null_mut()),
-        }
-    }
-}
-
-#[derive(Debug)]
+/// A lock-free binary search tree that that currently only supports concurrent
+/// pushing with removal for now only working through a mutable reference.
 pub struct LockFreeBST<K, V> {
-    head: AtomicPtr<Node<K, V>>,
+    head: AtomicPtr<TreeNode<K, V>>,
 }
 
 impl<K: Ord, V> LockFreeBST<K, V> {
+    /// Creates a new empty binary search tree.
     pub fn new() -> LockFreeBST<K, V> {
         LockFreeBST { head: AtomicPtr::new(ptr::null_mut()) }
     }
 
-    pub fn insert(&self, key: K, value: V) {
-        let mut new_node = Box::into_raw(Box::new(Node::new(key, value)));
+    /// Inserts a new key-value pair into the tree. If a value with the same key
+    /// already exists it returns the old key-value pair.
+    pub fn insert(&self, key: K, value: V) -> Option<(K, V)> {
+        let mut new_node = Box::into_raw(Box::new(TreeNode::new(key, value)));
         let mut curr = &self.head;
         let mut curr_ptr = self.head.load(Ordering::Acquire);
         loop {
             if curr_ptr.is_null() {
-                if self.head.compare_and_swap(
+                match self.head.compare_exchange(
                     curr_ptr,
                     new_node,
                     Ordering::AcqRel,
-                ) == curr_ptr
-                {
-                    break;
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => return None,
+                    Err(other) => curr_ptr = other,
                 }
             } else {
                 let (current_ref, new_key) =
@@ -56,13 +42,13 @@ impl<K: Ord, V> LockFreeBST<K, V> {
                     Less => {
                         let left = current_ref.left.load(Ordering::Acquire);
                         if left.is_null() {
-                            if current_ref.left.compare_and_swap(
+                            if let Ok(_) = current_ref.left.compare_exchange(
                                 left,
                                 new_node,
                                 Ordering::AcqRel,
-                            ) == left
-                            {
-                                break;
+                                Ordering::Acquire,
+                            ) {
+                                return None;
                             }
                         } else {
                             curr = &current_ref.left;
@@ -72,13 +58,13 @@ impl<K: Ord, V> LockFreeBST<K, V> {
                     Greater => {
                         let right = current_ref.right.load(Ordering::Acquire);
                         if right.is_null() {
-                            if current_ref.right.compare_and_swap(
+                            if let Ok(_) = current_ref.right.compare_exchange(
                                 right,
                                 new_node,
                                 Ordering::AcqRel,
-                            ) == right
-                            {
-                                break;
+                                Ordering::Acquire,
+                            ) {
+                                return None;
                             }
                         } else {
                             curr = &current_ref.right;
@@ -86,28 +72,21 @@ impl<K: Ord, V> LockFreeBST<K, V> {
                         }
                     },
                     Equal => {
+                        let TreeNode { right, left, key, value } =
+                            unsafe { ptr::read(current_ref) };
+
                         unsafe {
-                            (*new_node).left = AtomicPtr::new(
-                                current_ref.left.load(Ordering::Acquire),
-                            );
-                            (*new_node).right = AtomicPtr::new(
-                                current_ref.right.load(Ordering::Acquire),
-                            );
-                        }
+                            (*new_node).left = left;
+                            (*new_node).right = right;
+                        };
+
                         match curr.compare_exchange(
                             curr_ptr,
                             new_node,
                             Ordering::AcqRel,
                             Ordering::Acquire,
                         ) {
-                            Ok(mut old_ptr) => unsafe {
-                                (*old_ptr).left =
-                                    AtomicPtr::new(core::ptr::null_mut());
-                                (*old_ptr).right =
-                                    AtomicPtr::new(core::ptr::null_mut());
-                                core::ptr::drop_in_place(old_ptr);
-                                break;
-                            },
+                            Ok(_) => return Some((key, value)),
                             Err(new_ptr) => curr_ptr = new_ptr,
                         }
                     },
@@ -116,13 +95,15 @@ impl<K: Ord, V> LockFreeBST<K, V> {
         }
     }
 
+    /// Traverses the tree in sorted order and returns an iterator of owned
+    /// values.
     pub fn order_traversal(&self) -> impl Iterator<Item = (K, V)>
     where
         K: Clone,
         V: Clone,
     {
         fn traverse_and_collect<K, V>(
-            node: *mut Node<K, V>,
+            node: *mut TreeNode<K, V>,
             res: &mut Vec<(K, V)>,
         ) where
             K: Clone,
@@ -144,6 +125,7 @@ impl<K: Ord, V> LockFreeBST<K, V> {
         kvps.into_iter()
     }
 
+    /// Drains all elements of the tree and returns them sorted in an iterator.
     pub fn drain(&mut self) -> impl Iterator<Item = (K, V)> {
         let head = loop {
             let head = self.head.load(Ordering::Relaxed);
@@ -158,7 +140,7 @@ impl<K: Ord, V> LockFreeBST<K, V> {
             }
         };
 
-        let mut stack: Vec<*mut Node<K, V>> = vec![head];
+        let mut stack: Vec<*mut TreeNode<K, V>> = vec![head];
 
         let mut kvps: Vec<(K, V)> = vec![];
 
@@ -166,13 +148,13 @@ impl<K: Ord, V> LockFreeBST<K, V> {
             if let Some(node_ptr) = stack.pop() {
                 if !node_ptr.is_null() {
                     unsafe {
-                        let Node { key, value, left, right } =
+                        let TreeNode { key, value, left, right } =
                             *Box::from_raw(node_ptr);
                         if left.load(Ordering::Relaxed).is_null() {
                             kvps.push((key, value));
                             stack.push(right.load(Ordering::Relaxed));
                         } else {
-                            let node_ptr = Box::into_raw(Box::new(Node {
+                            let node_ptr = Box::into_raw(Box::new(TreeNode {
                                 key,
                                 value,
                                 left: AtomicPtr::new(ptr::null_mut()),
@@ -191,9 +173,24 @@ impl<K: Ord, V> LockFreeBST<K, V> {
     }
 }
 
+impl<K, V> Debug for LockFreeBST<K, V>
+where
+    K: Debug,
+    V: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let head = self.head.load(Ordering::Relaxed);
+        if !head.is_null() {
+            unsafe { write!(f, "LockFreeBST {{ {:?} }}", *head) }
+        } else {
+            write!(f, "LockFreeBST {{}}")
+        }
+    }
+}
+
 impl<K, V> Drop for LockFreeBST<K, V> {
     fn drop(&mut self) {
-        let mut stack: Vec<*mut Node<K, V>> =
+        let mut stack: Vec<*mut TreeNode<K, V>> =
             vec![self.head.load(Ordering::Relaxed)];
 
         while let Some(node_ptr) = stack.pop() {
@@ -208,9 +205,70 @@ impl<K, V> Drop for LockFreeBST<K, V> {
     }
 }
 
+#[repr(align(2))]
+struct TreeNode<K, V> {
+    key: K,
+    value: V,
+    left: AtomicPtr<TreeNode<K, V>>,
+    right: AtomicPtr<TreeNode<K, V>>,
+}
+
+impl<K: Ord, V> TreeNode<K, V> {
+    pub fn new(key: K, value: V) -> TreeNode<K, V> {
+        TreeNode {
+            key,
+            value,
+            left: AtomicPtr::new(ptr::null_mut()),
+            right: AtomicPtr::new(ptr::null_mut()),
+        }
+    }
+}
+
+impl<K, V> Debug for TreeNode<K, V>
+where
+    K: Debug,
+    V: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (left, right) = (
+            self.left.load(Ordering::Relaxed),
+            self.right.load(Ordering::Relaxed),
+        );
+        unsafe {
+            match (left.is_null(), right.is_null()) {
+                (true, true) => write!(
+                    f,
+                    "TreeNode {{ key: {:?}, value: {:?}, left: {{}}, right: \
+                     {{}} }}",
+                    self.key, self.value
+                ),
+                (false, true) => write!(
+                    f,
+                    "TreeNode {{ key: {:?}, value: {:?}, left: {:?}, right: \
+                     {{}} }}",
+                    self.key, self.value, *left
+                ),
+                (true, false) => write!(
+                    f,
+                    "TreeNode {{ key: {:?}, value: {:?} , left: {{}}, right: \
+                     {:?} }}",
+                    self.key, self.value, *right
+                ),
+                (false, false) => write!(
+                    f,
+                    "TreeNode {{ key: {:?}, value: {:?} , left: {:?}, right: \
+                     {:?} }}",
+                    self.key, self.value, *left, *right
+                ),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod bst_tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn insert_works() {
@@ -222,7 +280,12 @@ mod bst_tests {
         tree.insert(3, "there".into());
         tree.insert(1, "yess".into());
 
-        tree.order_traversal();
+        println!("{:?}", tree);
+
+        println!(
+            "{:?}",
+            tree.order_traversal().collect::<Vec<(i32, String)>>()
+        );
     }
 
     struct CountOnDrop {
@@ -270,6 +333,8 @@ mod bst_tests {
         tree.insert(1, 1);
         tree.insert(4, 4);
         tree.insert(2, 2);
+
+        println!("{:?}", tree);
 
         let actual = tree.drain().collect::<Vec<(i32, i32)>>();
 
