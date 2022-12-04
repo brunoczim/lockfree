@@ -55,6 +55,9 @@ pub mod map;
 /// A lock-free set.
 pub mod set;
 
+/// A lock-free binary search tree.
+pub mod bst;
+
 /// Collection of lock-free FIFO channels. These channels are fully asynchronous
 /// and their receivers do not provide any sort of `wait-for-message` operation.
 /// It would be blocking otherwise, thus not lock-free. If you need such a
