@@ -1,4 +1,4 @@
-pub use bst::LockFreeBST as BST;
+pub use bst::BST;
 pub use channel::{mpmc, mpsc, spmc, spsc};
 pub use map::Map;
 pub use queue::Queue;
