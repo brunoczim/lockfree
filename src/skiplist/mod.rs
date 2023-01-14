@@ -41,7 +41,7 @@ const HEIGHT_MASK: usize = (1 << (HEIGHT_BITS + 1)) - 1;
 ///
 /// For further, and much more thorough explanation and derivation of skip list
 /// and their invariant, see also:
-/// - [Skip List CS.CMU](https://www.cs.cmu.edu/~ckingsf/bioinfo-lectures/skiplists.pdfl)
+/// - [Skip List CS.CMU](https://www.cs.cmu.edu/~ckingsf/bioinfo-lectures/skiplists.pdf)
 /// - [Skip List Data Structure](https://www.mydistributed.systems/2021/03/skip-list-data-structure.html)
 /// - [Skip List Proposal/Priority Queue](https://tstentz.github.io/418proposal/)
 pub struct SkipList<K, V> {
