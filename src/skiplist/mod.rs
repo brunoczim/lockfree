@@ -651,6 +651,12 @@ where
         self.next_node(&curr.into())
     }
 
+    /// Removes the first [Node](Node) (with the smallest key) from the list if
+    /// it is not empty.
+    pub fn pop_first<'a>(&'a self) -> Option<Entry<'a, K, V>> {
+        self.get_first()?.remove()
+    }
+
     /// Returns the last [Node](Node) in the [SkipList](SkipList) if the list
     /// is not empty. Runtime is `O(n)`
     pub fn get_last<'a>(&'a self) -> Option<Entry<'a, K, V>> {

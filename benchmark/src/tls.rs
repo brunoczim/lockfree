@@ -53,7 +53,7 @@ thread_local! {
 impl Target for BlockingTarget {
     #[inline(always)]
     fn round(&mut self) {
-        let cell = self.inner.get_or(|| Box::new(Cell::new(0)));
+        let cell = self.inner.get_or(|| *Box::new(Cell::new(0)));
         cell.set(cell.get().wrapping_add(1));
     }
 }
@@ -61,7 +61,7 @@ impl Target for BlockingTarget {
 impl Target for BlkCachedTarget {
     #[inline(always)]
     fn round(&mut self) {
-        let cell = self.inner.get_or(|| Box::new(Cell::new(0)));
+        let cell = self.inner.get_or(|| *Box::new(Cell::new(0)));
         cell.set(cell.get().wrapping_add(1));
     }
 }
