@@ -33,6 +33,7 @@ impl Machine for SkipListMachine {
                         .list
                         .remove(&Box::new(val))
                         .map_or(bytecode.next().unwrap_or(0), |e| *e.val);
+                    break;
                 },
 
                 2 | 3 => {
