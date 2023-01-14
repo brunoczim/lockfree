@@ -339,8 +339,6 @@ where
         //
         // 1.-3. Some as method and covered by method caller.
         // 4. We are not unlinking the head. - Covered by previous safety check.
-        fence(Ordering::Release);
-
         for (i, prev) in previous_nodes.iter().enumerate().take(height).rev() {
             let (new_next, _tag) = node.levels[i].load_decomposed();
 
