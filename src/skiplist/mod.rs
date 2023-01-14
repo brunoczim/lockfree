@@ -141,9 +141,9 @@ where
 
         // Protects the new_node so concurrent removals do not invalidate our
         // pointer.
-        let new_node =
-            NodeRef::from_pause_with(self.incin.inner.pause(), || new_node_raw)
-                .unwrap();
+        let new_node = self
+            .node_ref_with(|| new_node_raw)
+            .expect("new_node to not be null!");
 
         let mut starting_height = 0;
 
@@ -198,10 +198,7 @@ where
         for i in start_height .. new_node.height() {
             let prev = &previous_nodes[i];
 
-            let next =
-                NodeRef::from_pause_with(self.incin.inner.pause(), || {
-                    prev.levels[i].load_ptr()
-                });
+            let next = self.node_ref_with(|| prev.levels[i].load_ptr());
 
             let next_ptr =
                 next.as_ref().map_or(std::ptr::null_mut(), |n| n.as_ptr());
@@ -385,8 +382,8 @@ where
         &self,
         node: NodeRef<'a, K, V>,
     ) -> Option<NodeRef<'a, K, V>> {
-        if node.try_sub_ref().expect("to not overflow") == 0 {
-            let NodeRef { node, _pause } = node;
+        if node.sub_ref() == 0 {
+            let NodeRef { node, _pause, .. } = node;
 
             _pause.add_to_incin(DeallocOnDrop::from(node.as_ptr()));
             None
@@ -446,10 +443,10 @@ where
             for level in prev.iter_mut() {
                 core::ptr::write(
                     level.as_mut_ptr(),
-                    NodeRef::from_raw_and_pause(
-                        self.incin.inner.pause(),
-                        self.head.cast::<Node<K, V>>().as_ptr(),
-                    ),
+                    self.node_ref_with(|| {
+                        self.head.cast::<Node<K, V>>().as_ptr()
+                    })
+                    .expect("Head to not be null!"),
                 )
             }
 
@@ -465,11 +462,9 @@ where
 
             // We need not protect the head, as it will always be valid, as long
             // as we are in a sane state.
-            let mut curr =
-                NodeRef::from_pause_with(self.incin.inner.pause(), || {
-                    self.head.as_ptr().cast::<Node<K, V>>()
-                })
-                .unwrap();
+            let mut curr = self
+                .node_ref_with(|| self.head.as_ptr().cast::<Node<K, V>>())
+                .expect("Head to not be null!");
 
             // steps:
             // 1. Go through each level until we reach a node with a key GEQ to
@@ -484,10 +479,9 @@ where
             // current node to the next node.
             while level > 0 {
                 let next = unsafe {
-                    let mut next = NodeRef::from_pause_with(
-                        self.incin.inner.pause(),
-                        || curr.levels[level - 1].load_ptr(),
-                    );
+                    let mut next = self
+                        .node_ref_with(|| curr.levels[level - 1].load_ptr());
+
                     loop {
                         if next.is_none() {
                             break next;
@@ -501,10 +495,8 @@ where
 
                         let n = next.unwrap();
 
-                        let new_next = NodeRef::from_pause_with(
-                            self.incin.inner.pause(),
-                            || n.levels[level - 1].load_ptr(),
-                        );
+                        let new_next = self
+                            .node_ref_with(|| n.levels[level - 1].load_ptr());
 
                         let Ok(n) = self.unlink_level(&curr, n, new_next, level - 1) else {
                             continue '_search;
@@ -531,10 +523,9 @@ where
 
             unsafe {
                 return if search_closest {
-                    let mut next = NodeRef::from_pause_with(
-                        self.incin.inner.pause(),
-                        || curr.levels[0].load_ptr(),
-                    );
+                    let mut next =
+                        self.node_ref_with(|| curr.levels[0].load_ptr());
+
                     loop {
                         if next.is_none() {
                             break;
@@ -548,10 +539,8 @@ where
 
                         let n = next.unwrap();
 
-                        let new_next = NodeRef::from_pause_with(
-                            self.incin.inner.pause(),
-                            || n.levels[0].load_ptr(),
-                        );
+                        let new_next =
+                            self.node_ref_with(|| n.levels[0].load_ptr());
 
                         let Ok(n) = self.unlink_level(&curr, n, new_next, level - 1) else {
                             continue '_search;
@@ -562,10 +551,9 @@ where
 
                     SearchResult { prev, target: next }
                 } else {
-                    match NodeRef::from_pause_with(
-                        self.incin.inner.pause(),
-                        || prev[0].as_ref().levels[0].load_ptr(),
-                    ) {
+                    match self
+                        .node_ref_with(|| prev[0].as_ref().levels[0].load_ptr())
+                    {
                         Some(next) if next.key == *key && !next.removed() => {
                             SearchResult { prev, target: Some(next) }
                         },
@@ -608,17 +596,11 @@ where
             return self.find(&node.key, true).target.map(|t| t.into());
         };
 
-        let mut next =
-            NodeRef::from_pause_with(self.incin.inner.pause(), || {
-                node.levels[0].load_ptr()
-            })?;
+        let mut next = self.node_ref_with(|| node.levels[0].load_ptr())?;
 
         // Unlink and skip all removed `Node`s we may encounter.
         while next.levels[0].load_tag() == 1 {
-            let new =
-                NodeRef::from_pause_with(self.incin.inner.pause(), || {
-                    next.levels[0].load_ptr()
-                });
+            let new = self.node_ref_with(|| next.levels[0].load_ptr());
             next = unsafe {
                 self.unlink_level(&node, next, new, 0)
                     .ok()
@@ -636,10 +618,9 @@ where
             return None;
         }
 
-        let curr = NodeRef::from_pause_with(self.incin.inner.pause(), || {
-            self.head.as_ptr().cast::<Node<K, V>>()
-        })
-        .unwrap();
+        let curr = self
+            .node_ref_with(|| self.head.as_ptr().cast::<Node<K, V>>())
+            .expect("Head to not be null");
 
         self.next_node(&curr.into())
     }
@@ -662,10 +643,23 @@ where
         return Some(curr.into());
     }
 
+    /// Removes the first [Node](Node) (with the smallest key) from the list if
+    /// it is not empty.
+    pub fn pop_last<'a>(&'a self) -> Option<Entry<'a, K, V>> {
+        self.get_last()?.remove()
+    }
+
     /// Returns a borrowing iterator over the [SkipList](SkipList) that yields
     /// [Entries](Entry) into the list.
     pub fn iter<'a>(&'a self) -> iter::Iter<'a, K, V> {
         iter::Iter::from_list(self)
+    }
+
+    fn node_ref_with<F>(&self, f: F) -> Option<NodeRef<'_, K, V>>
+    where
+        F: FnOnce() -> *mut Node<K, V>,
+    {
+        NodeRef::from_pause_with_in(self.incin.inner.pause(), self, f)
     }
 }
 
@@ -742,9 +736,10 @@ impl ListState {
 
 /// A protected and *shared* reference to a key-value pair from or in the
 /// [SkipList](SkipList).
-#[allow(dead_code)]
-pub struct Entry<'a, K: 'a, V: 'a> {
+#[repr(C)]
+pub struct Entry<'a, K, V> {
     node: core::ptr::NonNull<Node<K, V>>,
+    list: &'a SkipList<K, V>,
     _pause: crate::incin::Pause<'a, DeallocOnDrop<K, V>>,
 }
 
@@ -764,7 +759,12 @@ impl<'a, K, V> Entry<'a, K, V> {
         // Our `HazardPointer` ensures that our pointers is valid.
         unsafe { &self.node.as_ref().key }
     }
-
+}
+impl<'a, K, V> Entry<'a, K, V>
+where
+    K: Ord + Send + Sync,
+    V: Send + Sync,
+{
     /// Removes the [Entry](Entry) from the [SkipList](SkipList) if
     /// it is not already removed.
     pub fn remove(self) -> Option<Entry<'a, K, V>> {
@@ -772,6 +772,8 @@ impl<'a, K, V> Entry<'a, K, V> {
             self.node.as_ref().set_removed().ok()?;
 
             self.node.as_ref().tag_levels(1).expect("no tags to exists");
+
+            self.list.find(&self.key, false);
 
             Some(self)
         }
@@ -801,15 +803,17 @@ where
     }
 }
 
-#[allow(dead_code)]
+#[repr(C)]
 struct NodeRef<'a, K, V> {
     node: NonNull<Node<K, V>>,
+    list: &'a SkipList<K, V>,
     _pause: crate::incin::Pause<'a, DeallocOnDrop<K, V>>,
 }
 
 impl<'a, K, V> NodeRef<'a, K, V> {
-    fn from_pause_with<F>(
+    fn from_pause_with_in<F>(
         pause: crate::incin::Pause<'a, DeallocOnDrop<K, V>>,
+        list: &'a SkipList<K, V>,
         f: F,
     ) -> Option<Self>
     where
@@ -820,6 +824,7 @@ impl<'a, K, V> NodeRef<'a, K, V> {
             if !ptr.is_null() {
                 Some(NodeRef {
                     node: NonNull::new_unchecked(ptr),
+                    list,
                     _pause: pause,
                 })
             } else {
@@ -829,10 +834,13 @@ impl<'a, K, V> NodeRef<'a, K, V> {
     }
 
     fn from_raw_and_pause(
+        list: &'a SkipList<K, V>,
         pause: crate::incin::Pause<'a, DeallocOnDrop<K, V>>,
         raw: *mut Node<K, V>,
     ) -> NodeRef<'a, K, V> {
-        unsafe { NodeRef { node: NonNull::new_unchecked(raw), _pause: pause } }
+        unsafe {
+            NodeRef { node: NonNull::new_unchecked(raw), list, _pause: pause }
+        }
     }
 
     fn as_ptr(&self) -> *mut Node<K, V> {
@@ -879,7 +887,11 @@ impl<'a, K, V> From<NodeRef<'a, K, V>> for Entry<'a, K, V> {
 
 impl<'a, K, V> Clone for NodeRef<'a, K, V> {
     fn clone(&self) -> Self {
-        NodeRef { node: self.node.clone(), _pause: self._pause.clone() }
+        NodeRef {
+            node: self.node.clone(),
+            list: self.list,
+            _pause: self._pause.clone(),
+        }
     }
 }
 

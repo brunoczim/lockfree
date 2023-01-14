@@ -161,20 +161,10 @@ impl<K, V> Node<K, V> {
     }
 
     pub(super) fn sub_ref(&self) -> usize {
-        self.height_and_removed
-            .fetch_sub(1 << (HEIGHT_BITS + 1), Ordering::SeqCst)
-            as usize
-    }
-
-    pub(super) fn try_sub_ref(&self) -> Result<usize, usize> {
-        self.height_and_removed
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |o| {
-                if (o & !REMOVED_MASK) >> (HEIGHT_BITS + 1) == 0 {
-                    panic!("Will underflow")
-                }
-                Some(o - (1 << (HEIGHT_BITS + 1)))
-            })
-            .map(|now| ((now & !REMOVED_MASK) >> (HEIGHT_BITS + 1)) - 1)
+        let prev = self
+            .height_and_removed
+            .fetch_sub(1 << (HEIGHT_BITS + 1), Ordering::SeqCst);
+        ((prev & !REMOVED_MASK) >> (HEIGHT_BITS + 1)) - 1
     }
 
     pub(super) fn removed(&self) -> bool {
