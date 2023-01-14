@@ -131,18 +131,13 @@ impl<K, V> Node<K, V> {
     }
 
     pub(super) fn height(&self) -> usize {
-        (self.height_and_removed.load(Ordering::Relaxed) & HEIGHT_MASK) as usize
-    }
-
-    pub(super) fn refs(&self) -> usize {
-        (self.height_and_removed.load(Ordering::SeqCst) & !REMOVED_MASK)
-            >> (HEIGHT_BITS + 1)
+        (self.height_and_removed.load(Ordering::Acquire) & HEIGHT_MASK) as usize
     }
 
     pub(super) fn add_ref(&self) -> usize {
         let refs = self
             .height_and_removed
-            .fetch_add(1 << (HEIGHT_BITS + 1), Ordering::SeqCst)
+            .fetch_add(1 << (HEIGHT_BITS + 1), Ordering::AcqRel)
             as usize;
 
         refs
@@ -150,7 +145,7 @@ impl<K, V> Node<K, V> {
 
     pub(super) fn try_add_ref(&self) -> Result<usize, usize> {
         self.height_and_removed
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |o| {
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |o| {
                 if (o & !REMOVED_MASK) >> (HEIGHT_BITS + 1) == 0 {
                     return None;
                 }
@@ -163,7 +158,7 @@ impl<K, V> Node<K, V> {
     pub(super) fn sub_ref(&self) -> usize {
         let prev = self
             .height_and_removed
-            .fetch_sub(1 << (HEIGHT_BITS + 1), Ordering::SeqCst);
+            .fetch_sub(1 << (HEIGHT_BITS + 1), Ordering::AcqRel);
         ((prev & !REMOVED_MASK) >> (HEIGHT_BITS + 1)) - 1
     }
 
@@ -179,7 +174,8 @@ impl<K, V> Node<K, V> {
     where
         F: Fn(usize) -> usize,
     {
-        let height_and_removed = self.height_and_removed.load(Ordering::SeqCst);
+        let height_and_removed =
+            self.height_and_removed.load(Ordering::Acquire);
 
         let new_height_and_removed = f(height_and_removed);
 
@@ -192,8 +188,8 @@ impl<K, V> Node<K, V> {
             .compare_exchange(
                 height_and_removed,
                 new_height_and_removed,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
             )
             .map_err(|_| ())
     }
@@ -282,8 +278,6 @@ mod node_test {
             assert!((*node).removed());
 
             (*node).add_ref();
-
-            assert_eq!((*node).refs(), 1);
 
             assert_eq!((*node).try_add_ref().unwrap(), 2);
         }

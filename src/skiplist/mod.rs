@@ -254,8 +254,8 @@ where
                 .compare_exchange(
                     next_ptr,
                     new_node.as_ptr(),
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
                 )
                 .is_err()
             {
@@ -339,12 +339,6 @@ where
         for (i, prev) in previous_nodes.iter().enumerate().take(height).rev() {
             let (new_next, _tag) = node.levels[i].load_decomposed();
 
-            // We check if the previous node is being removed after we have
-            // already unlinked from it as the prev nodes expects us
-            // to do this. We still need to stop the unlink here, as
-            // we will have to relink to the actual, lively previous
-            // node at this level as well.
-
             // Performs a compare_exchange, expecting the old value of the
             // pointer to be the current node. If it is not, we
             // cannot make any reasonable progress, so we search again.
@@ -352,7 +346,7 @@ where
                 .compare_exchange(
                     node.as_ptr(),
                     new_next,
-                    Ordering::Relaxed,
+                    Ordering::AcqRel,
                     Ordering::Relaxed,
                 )
                 .is_err()
@@ -520,47 +514,18 @@ where
                     },
                 }
             }
+            let next = self.node_ref_with(|| curr.levels[0].load_ptr());
 
-            unsafe {
-                return if search_closest {
-                    let mut next =
-                        self.node_ref_with(|| curr.levels[0].load_ptr());
-
-                    loop {
-                        if next.is_none() {
-                            break;
-                        }
-
-                        if let Some(n) = next.as_ref() {
-                            if n.levels[0].load_tag() == 0 {
-                                break;
-                            }
-                        }
-
-                        let n = next.unwrap();
-
-                        let new_next =
-                            self.node_ref_with(|| n.levels[0].load_ptr());
-
-                        let Ok(n) = self.unlink_level(&curr, n, new_next, level - 1) else {
-                            continue '_search;
-                        };
-
-                        next = n
-                    }
-
-                    SearchResult { prev, target: next }
-                } else {
-                    match self
-                        .node_ref_with(|| prev[0].as_ref().levels[0].load_ptr())
-                    {
-                        Some(next) if next.key == *key && !next.removed() => {
-                            SearchResult { prev, target: Some(next) }
-                        },
-                        _ => SearchResult { prev, target: None },
-                    }
-                };
-            }
+            return if search_closest {
+                SearchResult { prev, target: next }
+            } else {
+                match next {
+                    Some(next) if next.key == *key && !next.removed() => {
+                        SearchResult { prev, target: Some(next) }
+                    },
+                    _ => SearchResult { prev, target: None },
+                }
+            };
         }
     }
 
@@ -1172,10 +1137,7 @@ mod skiplist_test {
 
         impl<K> Drop for CountOnDrop<K> {
             fn drop(&mut self) {
-                println!("writing to counter!");
-                println!("count: {}", self.counter.load(Ordering::SeqCst));
                 self.counter.fetch_add(1, Ordering::SeqCst);
-                println!("wrote to counter");
             }
         }
 
@@ -1205,6 +1167,40 @@ mod skiplist_test {
         drop(list);
 
         assert_eq!(counter.load(Ordering::SeqCst), 3);
+
+        let list = SkipList::<Box<CountOnDrop<u8>>, ()>::new();
+
+        std::thread::scope(|s| {
+            let list = &list;
+            for _ in 0 .. 16 {
+                let counter = counter.clone();
+                s.spawn(move || {
+                    for _ in 0 .. 10_000 {
+                        match rand::random::<u8>() % 3 {
+                            0 => {
+                                list.remove(&Box::new(CountOnDrop {
+                                    key: rand::random(),
+                                    counter: counter.clone(),
+                                }));
+                            },
+                            _ => {
+                                list.insert(
+                                    Box::new(CountOnDrop {
+                                        key: rand::random(),
+                                        counter: counter.clone(),
+                                    }),
+                                    (),
+                                );
+                            },
+                        };
+                    }
+                });
+            }
+        });
+
+        drop(list);
+
+        assert_eq!(counter.load(Ordering::SeqCst), 160000);
     }
 
     #[test]

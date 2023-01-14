@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, Default)]
 struct SkipListMachine {
-    list: Arc<SkipList<Box<u8>, Box<u8>>>,
+    list: Arc<SkipList<Box<u16>, Box<u16>>>,
 }
 
 impl Spawn for SkipListMachine {
@@ -28,16 +28,15 @@ impl Machine for SkipListMachine {
         loop {
             match byte % 4 {
                 0 | 1 => {
-                    let val = bytecode.next().unwrap_or(0);
-                    byte = self
-                        .list
-                        .remove(&Box::new(val))
-                        .map_or(bytecode.next().unwrap_or(0), |e| *e.val);
+                    let val = ((bytecode.next().unwrap_or(0) as u16) << 8)
+                        + bytecode.next().unwrap_or(0) as u16;
+                    self.list.remove(&Box::new(val));
                     break;
                 },
 
                 2 | 3 => {
-                    let val = bytecode.next().unwrap_or(0);
+                    let val = ((bytecode.next().unwrap_or(0) as u16) << 8)
+                        + bytecode.next().unwrap_or(0) as u16;
                     self.list.insert(Box::new(val), Box::new(val));
                     break;
                 },
