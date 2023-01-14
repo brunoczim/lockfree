@@ -7,7 +7,7 @@ impl<T> MaybeTagged<T> {
         self.load_decomposed().0
     }
     pub(crate) fn load_decomposed(&self) -> (*mut T, usize) {
-        let raw = unsafe { self.0.load(Ordering::Acquire) };
+        let raw = self.0.load(Ordering::Acquire);
         Self::decompose_raw(raw)
     }
 
@@ -25,9 +25,7 @@ impl<T> MaybeTagged<T> {
     pub(crate) fn store_composed(&self, ptr: *mut T, tag: usize) {
         let tagged = Self::compose_raw(ptr, tag);
 
-        unsafe {
-            self.0.store(tagged, Ordering::Release);
-        }
+        self.0.store(tagged, Ordering::Release);
     }
 
     #[inline]
@@ -46,8 +44,10 @@ impl<T> MaybeTagged<T> {
         &self,
         expected: *mut T,
         new: *mut T,
+        succes: Ordering,
+        failure: Ordering,
     ) -> Result<(*mut T, usize), (*mut T, usize)> {
-        self.compare_exchange_with_tag(expected, 0, new, 0)
+        self.compare_exchange_with_tag(expected, 0, new, 0, succes, failure)
     }
 
     pub(crate) fn compare_exchange_with_tag(
@@ -56,49 +56,30 @@ impl<T> MaybeTagged<T> {
         e_tag: usize,
         new: *mut T,
         n_tag: usize,
+        succes: Ordering,
+        failure: Ordering,
     ) -> Result<(*mut T, usize), (*mut T, usize)> {
-        unsafe {
-            match self.0.compare_exchange(
-                Self::compose_raw(expected, e_tag),
-                Self::compose_raw(new, n_tag),
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(new) => Ok(Self::decompose_raw(new)),
-                Err(other) => Err(Self::decompose_raw(other)),
-            }
+        match self.0.compare_exchange(
+            Self::compose_raw(expected, e_tag),
+            Self::compose_raw(new, n_tag),
+            succes,
+            failure,
+        ) {
+            Ok(new) => Ok(Self::decompose_raw(new)),
+            Err(other) => Err(Self::decompose_raw(other)),
         }
-    }
-
-    pub(crate) fn tag(&self, tag: usize) {
-        let (mut old_ptr, mut old_tag) = self.load_decomposed();
-
-        while let Err((other_ptr, other_tag)) =
-            self.compare_exchange_with_tag(old_ptr, old_tag, old_ptr, tag)
-        {
-            (old_ptr, old_tag) = (other_ptr, other_tag);
-        }
-    }
-
-    pub(crate) fn try_tag(
-        &self,
-        expected: *mut T,
-        tag: usize,
-    ) -> Result<*mut T, *mut T> {
-        let old_tag = self.load_tag();
-        self.compare_exchange_with_tag(expected, old_tag, expected, tag)
-            .map(|s| s.0)
-            .map_err(|e| e.0)
     }
 
     pub(crate) fn compare_exchange_tag(
         &self,
         e_tag: usize,
         tag: usize,
+        succes: Ordering,
+        failure: Ordering,
     ) -> Result<usize, usize> {
         let mut ptr = self.load_ptr();
-        while let Err((other_ptr, other_tag)) =
-            self.compare_exchange_with_tag(ptr, e_tag, ptr, tag)
+        while let Err((other_ptr, other_tag)) = self
+            .compare_exchange_with_tag(ptr, e_tag, ptr, tag, succes, failure)
         {
             if other_tag != e_tag {
                 return Err(other_tag);
@@ -115,7 +96,7 @@ impl<T> MaybeTagged<T> {
     }
 
     pub(crate) fn as_std(&self) -> &AtomicPtr<T> {
-        unsafe { &self.0 }
+        &self.0
     }
 }
 

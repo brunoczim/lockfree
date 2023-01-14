@@ -23,6 +23,7 @@
 //! - `[x]` [Set](set::Set)
 //! - `[x]` [Stack](stack::Stack)
 //! - `[x]` [Queue](queue::Queue)
+//! - `[x]` [SkipList](skiplist::SkipList)
 //! - `[ ]` Deque
 //!
 //! # Performance Guide

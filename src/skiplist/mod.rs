@@ -11,45 +11,52 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-pub(crate) use self::{
+use self::{
     node::{Head, Node},
     padded::Padded,
 };
 
-pub(crate) const HEIGHT_BITS: usize = 5;
+const HEIGHT_BITS: usize = 5;
+const HEIGHT: usize = 1 << HEIGHT_BITS;
+const HEIGHT_MASK: usize = (1 << (HEIGHT_BITS + 1)) - 1;
 
-pub(crate) const HEIGHT: usize = 1 << HEIGHT_BITS;
-pub(crate) const HEIGHT_MASK: usize = (1 << (HEIGHT_BITS + 1)) - 1;
-
-pub(crate) struct ListState {
-    pub(crate) len: AtomicUsize,
-    pub(crate) max_height: AtomicUsize,
-    pub(crate) seed: AtomicUsize,
-}
-
-impl ListState {
-    pub(crate) fn new() -> Self {
-        ListState {
-            len: AtomicUsize::new(0),
-            max_height: AtomicUsize::new(1),
-            seed: AtomicUsize::new(rand::random()),
-        }
-    }
-}
-
+/// A lock-free skip list. Implemented using dynamically-allocated,
+/// multi-leveled `Node` towers.
+///
+/// # Design
+/// The SkipList consists of a sorted, multi-leveled linked list, where not
+/// every [Node](node::Node) is present at each level. On average, there are
+/// twice as many [Nodes](node::Node) on level `i` than on level `i+1`, which is
+/// our list **invariant**. This allows us to traverse the list in search for a
+/// value and get the minimum value with average time complexities of
+/// `O(log(n))` and `O(1)` respectively.
+///
+/// We achieve this invariant of `|level[i]|
+/// == 2 * |level[i+1]|` by randomizing the height of our [Nodes](node::Node) on
+/// insertion.
+///
+/// We get our claimed lookup speeds by starting our search on the highest level
+/// of our list, dropping down a level when we reach a [Node](node::Node) with a
+/// `key` larger than our search bound.
+///
+/// For further, and much more thorough explanation and derivation of skip list
+/// and their invariant, see also:
+/// - [Skip List CS.CMU](https://www.cs.cmu.edu/~ckingsf/bioinfo-lectures/skiplists.pdfl)
+/// - [Skip List Data Structure](https://www.mydistributed.systems/2021/03/skip-list-data-structure.html)
+/// - [Skip List Proposal/Priority Queue](https://tstentz.github.io/418proposal/)
 pub struct SkipList<K, V> {
-    pub(crate) head: NonNull<Head<K, V>>,
-    pub(crate) state: Padded<ListState>,
-    #[allow(dead_code)]
-    pub(crate) incin: SharedIncin<K, V>,
+    head: NonNull<Head<K, V>>,
+    state: Padded<ListState>,
+    incin: SharedIncin<K, V>,
 }
 
 make_shared_incin! {
     { "[`SkipList`]" }
-    pub SharedIncin<K, V> of DeallocOnDrop<K, V>
+    SharedIncin<K, V> of DeallocOnDrop<K, V>
 }
 
 impl<K, V> SkipList<K, V> {
+    /// Create a new and empty [SkipList](SkipList).
     pub fn new() -> Self {
         SkipList {
             head: Head::new(),
@@ -58,14 +65,25 @@ impl<K, V> SkipList<K, V> {
         }
     }
 
+    /// Returns the length of the [SkipList](SkipList). This is more of an
+    /// estimate and there are no strong
+    /// validity guarantees.
     pub fn len(&self) -> usize {
-        self.state.len.load(Ordering::Relaxed)
+        match self.state.len.load(Ordering::Relaxed) {
+            // Due to relaxed memory ordering, this may underflow at times.
+            len if len < (isize::MAX as usize) => 0,
+            len => len,
+        }
     }
 
+    /// Returns true if the [SkipList](SkipList) is *about* empty. Similar to
+    /// [len](SkipList::len) this does not come with strong validity guarantees.
     pub fn is_empty(&self) -> bool {
         self.state.len.load(Ordering::Relaxed) < 1
     }
 
+    /// Generates a random height for a [Node](node::Node) and updates the list
+    /// seed.
     fn gen_height(&self) -> usize {
         let mut seed = self.state.seed.load(Ordering::Relaxed);
         seed ^= seed << 13;
@@ -171,14 +189,20 @@ where
     unsafe fn link_nodes<'a>(
         &self,
         new_node: &'a NodeRef<'a, K, V>,
-        previous_nodes: [(NodeRef<'a, K, V>, Option<NodeRef<'a, K, V>>);
-            HEIGHT],
+        previous_nodes: [NodeRef<'a, K, V>; HEIGHT],
         start_height: usize,
     ) -> Result<(), usize> {
         // iterate over all the levels in the new nodes pointer tower
         for i in start_height .. new_node.height() {
-            let (prev, next) = &previous_nodes[i];
-            let next_ptr = prev.levels[i].load_ptr();
+            let prev = &previous_nodes[i];
+
+            let next =
+                NodeRef::from_pause_with(self.incin.inner.pause(), || {
+                    prev.levels[i].load_ptr()
+                });
+
+            let next_ptr =
+                next.as_ref().map_or(std::ptr::null_mut(), |n| n.as_ptr());
 
             let curr_next = new_node.levels[i].load_ptr();
 
@@ -189,26 +213,28 @@ where
             // We check if the next node is actually lower in key than our
             // current node. If the key is not greater we stop
             // building our node.
-            if next
-                .as_ref()
-                .and_then(|n| {
-                    if n.key <= new_node.key && !new_node.removed() {
-                        Some(())
-                    } else {
-                        None
-                    }
-                })
-                .is_some()
-            {
-                break;
-            }
+            match next.as_ref() {
+                Some(next)
+                    if next.key <= new_node.key && !new_node.removed() =>
+                {
+                    break
+                },
+                _ => (),
+            };
 
             // Swap the previous' next node into the new_node's level
             // It could be the case that we link ourselves to the previous node,
             // but just as we do this `next` attempts to unlink
             // itself and fails. So while we succeeded, `next`
             // repeats its search and finds that we are the next
-            if new_node.levels[i].compare_exchange(curr_next, next_ptr).is_err()
+            if new_node.levels[i]
+                .compare_exchange(
+                    curr_next,
+                    next_ptr,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_err()
             {
                 return Err(i);
             };
@@ -226,7 +252,12 @@ where
             // level has changed since the search, we repeat the
             // search from this level.
             if prev.levels[i]
-                .compare_exchange(next_ptr, new_node.as_ptr())
+                .compare_exchange(
+                    next_ptr,
+                    new_node.as_ptr(),
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
                 .is_err()
             {
                 new_node.sub_ref();
@@ -244,7 +275,9 @@ where
         Ok(())
     }
 
-    #[allow(unused_assignments)]
+    /// Removes a key-value pair from the [SkipList](SkipList) if the given
+    /// `key` is present and returns a protected *immutable* reference to the
+    /// pair.
     pub fn remove<'a>(&'a self, key: &K) -> Option<Entry<'a, K, V>>
     where
         K: Send,
@@ -293,8 +326,7 @@ where
         &self,
         mut node: NodeRef<'a, K, V>,
         height: usize,
-        previous_nodes: &[(NodeRef<'a, K, V>, Option<NodeRef<'a, K, V>>);
-             HEIGHT],
+        previous_nodes: &[NodeRef<'a, K, V>; HEIGHT],
     ) -> Result<(), usize> {
         // safety check against UB caused by unlinking the head
         if self.is_head(node.as_ptr()) {
@@ -305,9 +337,7 @@ where
         //
         // 1.-3. Some as method and covered by method caller.
         // 4. We are not unlinking the head. - Covered by previous safety check.
-        for (i, (prev, _)) in
-            previous_nodes.iter().enumerate().take(height).rev()
-        {
+        for (i, prev) in previous_nodes.iter().enumerate().take(height).rev() {
             let (new_next, _tag) = node.levels[i].load_decomposed();
 
             // We check if the previous node is being removed after we have
@@ -319,7 +349,23 @@ where
             // Performs a compare_exchange, expecting the old value of the
             // pointer to be the current node. If it is not, we
             // cannot make any reasonable progress, so we search again.
-            if prev.levels[i].compare_exchange(node.as_ptr(), new_next).is_err()
+            if (i == height
+                && prev.levels[i]
+                    .compare_exchange(
+                        node.as_ptr(),
+                        new_next,
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    )
+                    .is_err())
+                || prev.levels[i]
+                    .compare_exchange(
+                        node.as_ptr(),
+                        new_next,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    )
+                    .is_err()
             {
                 return Err(i + 1);
             }
@@ -331,7 +377,7 @@ where
             };
         }
 
-        self.state.len.fetch_sub(1, Ordering::AcqRel);
+        self.state.len.fetch_sub(1, Ordering::Relaxed);
 
         drop(previous_nodes);
 
@@ -374,9 +420,12 @@ where
         let next_ptr =
             next.as_ref().map_or(core::ptr::null_mut(), |n| n.as_ptr());
 
-        if let Ok(_) =
-            prev.levels[level].compare_exchange(curr.as_ptr(), next_ptr)
-        {
+        if let Ok(_) = prev.levels[level].compare_exchange(
+            curr.as_ptr(),
+            next_ptr,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        ) {
             self.sub_ref(curr);
 
             Ok(next)
@@ -385,6 +434,10 @@ where
         }
     }
 
+    /// Find a `Node` given a `key`. If `search_closest` it may also return the
+    /// next greater `Node` if the `key` is not present. Additionally, it
+    /// returns an array holding the previous `Nodes` in the list that link
+    /// to the target node.
     fn find<'a>(
         &'a self,
         key: &K,
@@ -394,31 +447,20 @@ where
 
         // Initialize the `prev` array.
         let mut prev = unsafe {
-            let mut prev: [core::mem::MaybeUninit<(
-                NodeRef<'a, K, V>,
-                Option<NodeRef<'a, K, V>>,
-            )>; HEIGHT] = core::mem::MaybeUninit::uninit().assume_init();
+            let mut prev: [core::mem::MaybeUninit<NodeRef<'a, K, V>>; HEIGHT] =
+                core::mem::MaybeUninit::uninit().assume_init();
 
-            for (i, level) in prev.iter_mut().enumerate() {
+            for level in prev.iter_mut() {
                 core::ptr::write(
                     level.as_mut_ptr(),
-                    (
-                        NodeRef::from_raw_and_pause(
-                            self.incin.inner.pause(),
-                            self.head.cast::<Node<K, V>>().as_ptr(),
-                        ),
-                        NodeRef::from_pause_with(
-                            self.incin.inner.pause(),
-                            || self.head.as_ref().levels[i].load_ptr(),
-                        ),
+                    NodeRef::from_raw_and_pause(
+                        self.incin.inner.pause(),
+                        self.head.cast::<Node<K, V>>().as_ptr(),
                     ),
                 )
             }
 
-            core::mem::transmute::<
-                _,
-                [(NodeRef<'a, K, V>, Option<NodeRef<'a, K, V>>); HEIGHT],
-            >(prev)
+            core::mem::transmute::<_, [NodeRef<'a, K, V>; HEIGHT]>(prev)
         };
 
         '_search: loop {
@@ -481,13 +523,13 @@ where
 
                 match next {
                     Some(next) if (*next).key < *key => {
-                        prev[level - 1] = (curr, Some(next.clone()));
+                        prev[level - 1] = curr;
 
                         curr = next;
                     },
-                    next => {
+                    _ => {
                         // Update previous_nodes.
-                        prev[level - 1] = (curr.clone(), next);
+                        prev[level - 1] = curr.clone();
 
                         level -= 1;
                     },
@@ -498,7 +540,7 @@ where
                 return if search_closest {
                     let mut next = NodeRef::from_pause_with(
                         self.incin.inner.pause(),
-                        || curr.levels[level - 1].load_ptr(),
+                        || curr.levels[0].load_ptr(),
                     );
                     loop {
                         if next.is_none() {
@@ -506,7 +548,7 @@ where
                         }
 
                         if let Some(n) = next.as_ref() {
-                            if n.levels[level - 1].load_tag() == 0 {
+                            if n.levels[0].load_tag() == 0 {
                                 break;
                             }
                         }
@@ -515,7 +557,7 @@ where
 
                         let new_next = NodeRef::from_pause_with(
                             self.incin.inner.pause(),
-                            || n.levels[level - 1].load_ptr(),
+                            || n.levels[0].load_ptr(),
                         );
 
                         let Ok(n) = self.unlink_level(&curr, n, new_next, level - 1) else {
@@ -529,7 +571,7 @@ where
                 } else {
                     match NodeRef::from_pause_with(
                         self.incin.inner.pause(),
-                        || prev[0].0.as_ref().levels[0].load_ptr(),
+                        || prev[0].as_ref().levels[0].load_ptr(),
                     ) {
                         Some(next) if next.key == *key && !next.removed() => {
                             SearchResult { prev, target: Some(next) }
@@ -541,6 +583,7 @@ where
         }
     }
 
+    /// Get a reference to an [Entry](Entry) if one with the given key exists.
     pub fn get<'a>(&'a self, key: &K) -> Option<Entry<'a, K, V>> {
         if self.is_empty() {
             return None;
@@ -559,6 +602,8 @@ where
         std::ptr::eq(ptr, self.head.as_ptr().cast())
     }
 
+    /// Returns the next [Node](Node) in the [SkipList](SkipList) if the given
+    /// [Node](Node) is not the last.
     fn next_node<'a>(
         &'a self,
         node: &Entry<'a, K, V>,
@@ -591,6 +636,8 @@ where
         Some(next.into())
     }
 
+    /// Returns the first [Node](Node) in the [SkipList](SkipList) if the list
+    /// is not empty.
     pub fn get_first<'a>(&'a self) -> Option<Entry<'a, K, V>> {
         if self.is_empty() {
             return None;
@@ -604,6 +651,8 @@ where
         self.next_node(&curr.into())
     }
 
+    /// Returns the last [Node](Node) in the [SkipList](SkipList) if the list
+    /// is not empty. Runtime is `O(n)`
     pub fn get_last<'a>(&'a self) -> Option<Entry<'a, K, V>> {
         let mut curr = self.get_first()?;
 
@@ -614,6 +663,8 @@ where
         return Some(curr.into());
     }
 
+    /// Returns a borrowing iterator over the [SkipList](SkipList) that yields
+    /// [Entries](Entry) into the list.
     pub fn iter<'a>(&'a self) -> iter::Iter<'a, K, V> {
         iter::Iter::from_list(self)
     }
@@ -673,6 +724,25 @@ impl<K, V> Debug for SkipList<K, V> {
     }
 }
 
+/// Frequently accessed data in the [SkipList](SkipList).
+struct ListState {
+    len: AtomicUsize,
+    max_height: AtomicUsize,
+    seed: AtomicUsize,
+}
+
+impl ListState {
+    fn new() -> Self {
+        ListState {
+            len: AtomicUsize::new(0),
+            max_height: AtomicUsize::new(1),
+            seed: AtomicUsize::new(rand::random()),
+        }
+    }
+}
+
+/// A protected and *shared* reference to a key-value pair from or in the
+/// [SkipList](SkipList).
 #[allow(dead_code)]
 pub struct Entry<'a, K: 'a, V: 'a> {
     node: core::ptr::NonNull<Node<K, V>>,
@@ -680,6 +750,7 @@ pub struct Entry<'a, K: 'a, V: 'a> {
 }
 
 impl<'a, K, V> Entry<'a, K, V> {
+    /// Returns the value of the key-value pair.
     pub fn val(&self) -> &V {
         // #Safety
         //
@@ -687,6 +758,7 @@ impl<'a, K, V> Entry<'a, K, V> {
         unsafe { &self.node.as_ref().val }
     }
 
+    /// Returns the key of the key-value pair.
     pub fn key(&self) -> &K {
         // #Safety
         //
@@ -694,6 +766,8 @@ impl<'a, K, V> Entry<'a, K, V> {
         unsafe { &self.node.as_ref().key }
     }
 
+    /// Removes the [Entry](Entry) from the [SkipList](SkipList) if
+    /// it is not already removed.
     pub fn remove(self) -> Option<Entry<'a, K, V>> {
         unsafe {
             self.node.as_ref().set_removed().ok()?;
@@ -714,7 +788,7 @@ impl<'a, K, V> core::ops::Deref for Entry<'a, K, V> {
 }
 
 struct SearchResult<'a, K, V> {
-    prev: [(NodeRef<'a, K, V>, Option<NodeRef<'a, K, V>>); HEIGHT],
+    prev: [NodeRef<'a, K, V>; HEIGHT],
     target: Option<NodeRef<'a, K, V>>,
 }
 
@@ -866,8 +940,10 @@ pub mod iter {
     use super::Node;
 
     use super::{Entry, SkipList};
-    use std::iter::{FromIterator, IntoIterator, Iterator};
+    use std::iter::FromIterator;
 
+    /// A borrowing [Iterator](std::iter::Iterator) over [Entries](Entry) in the
+    /// SkipList.
     pub struct Iter<'a, K, V> {
         list: &'a SkipList<K, V>,
         next: Option<Entry<'a, K, V>>,
@@ -878,6 +954,7 @@ pub mod iter {
         K: Ord + Send + Sync,
         V: Send + Sync,
     {
+        /// Creates an instance of [Iter](Iter) from a [SkipList](SkipList).
         pub fn from_list(list: &'a SkipList<K, V>) -> Self {
             Self { list, next: list.get_first() }
         }
@@ -926,6 +1003,8 @@ pub mod iter {
         }
     }
 
+    /// An owning [Iterator](std::iter::Iterator) over key-value pairs from
+    /// a [SkipList](SkipList).
     pub struct IntoIter<K, V> {
         next: *mut Node<K, V>,
     }
@@ -935,6 +1014,7 @@ pub mod iter {
         K: Ord + Send + Sync,
         V: Send + Sync,
     {
+        /// Creates an instance of [IntoIter] from a [SkipList](SkipList).
         pub fn from_list<'a>(mut list: SkipList<K, V>) -> Self {
             unsafe {
                 let next = list.head.as_ref().levels[0].load_ptr();
@@ -1018,7 +1098,7 @@ mod skiplist_test {
 
     #[test]
     fn test_rand_height_sync() {
-        let mut list: SkipList<&str, &str> = SkipList::new();
+        let list: SkipList<&str, &str> = SkipList::new();
         let node = Node::new_rand_height("Hello", "There!", &list);
 
         assert!(!node.is_null());

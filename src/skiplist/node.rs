@@ -20,15 +20,15 @@ use std::{
 /// Head stores the first pointer tower at the beginning of the list. It is
 /// always of maximum
 #[repr(C)]
-pub(crate) struct Head<K, V> {
-    pub(crate) key: K,
-    pub(crate) val: V,
-    pub(crate) height_and_removed: AtomicUsize,
-    pub(crate) levels: Levels<K, V>,
+pub(super) struct Head<K, V> {
+    key: K,
+    val: V,
+    height_and_removed: AtomicUsize,
+    pub(super) levels: Levels<K, V>,
 }
 
 impl<K, V> Head<K, V> {
-    pub(crate) fn new() -> NonNull<Self> {
+    pub(super) fn new() -> NonNull<Self> {
         let head_ptr = unsafe { Node::<K, V>::alloc(super::HEIGHT).cast() };
 
         if let Some(head) = NonNull::new(head_ptr) {
@@ -38,14 +38,14 @@ impl<K, V> Head<K, V> {
         }
     }
 
-    pub(crate) unsafe fn drop(ptr: NonNull<Self>) {
+    pub(super) unsafe fn drop(ptr: NonNull<Self>) {
         Node::<K, V>::dealloc(ptr.as_ptr().cast());
     }
 }
 
 #[repr(C)]
-pub(crate) struct Levels<K, V> {
-    pub(crate) pointers: [MaybeTagged<Node<K, V>>; 1],
+pub(super) struct Levels<K, V> {
+    pub(super) pointers: [MaybeTagged<Node<K, V>>; 1],
 }
 
 impl<K, V> Levels<K, V> {
@@ -68,12 +68,12 @@ impl<K, V> Index<usize> for Levels<K, V> {
 pub struct Node<K, V> {
     pub key: K,
     pub val: V,
-    pub(crate) height_and_removed: AtomicUsize,
-    pub(crate) levels: Levels<K, V>,
+    pub(super) height_and_removed: AtomicUsize,
+    pub(super) levels: Levels<K, V>,
 }
 
 impl<K, V> Node<K, V> {
-    pub(crate) fn new(key: K, val: V, height: usize) -> *mut Self {
+    pub(super) fn new(key: K, val: V, height: usize) -> *mut Self {
         unsafe {
             let node = Self::alloc(height);
             ptr::write(&mut (*node).key, key);
@@ -82,7 +82,7 @@ impl<K, V> Node<K, V> {
         }
     }
 
-    pub(crate) fn new_rand_height(
+    pub(super) fn new_rand_height(
         key: K,
         val: V,
         list: &SkipList<K, V>,
@@ -91,7 +91,7 @@ impl<K, V> Node<K, V> {
         Self::new(key, val, list.gen_height())
     }
 
-    pub(crate) unsafe fn alloc(height: usize) -> *mut Self {
+    pub(super) unsafe fn alloc(height: usize) -> *mut Self {
         let layout = Self::get_layout(height);
 
         let ptr = alloc(layout).cast::<Self>();
@@ -107,7 +107,7 @@ impl<K, V> Node<K, V> {
         ptr
     }
 
-    pub(crate) unsafe fn dealloc(ptr: *mut Self) {
+    pub(super) unsafe fn dealloc(ptr: *mut Self) {
         let height = (*ptr).height();
 
         let layout = Self::get_layout(height);
@@ -123,23 +123,23 @@ impl<K, V> Node<K, V> {
         Layout::from_size_align_unchecked(size_self + size_levels, align)
     }
 
-    pub(crate) unsafe fn drop(ptr: *mut Self) {
+    pub(super) unsafe fn drop(ptr: *mut Self) {
         ptr::drop_in_place(&mut (*ptr).key);
         ptr::drop_in_place(&mut (*ptr).val);
 
         Node::dealloc(ptr);
     }
 
-    pub(crate) fn height(&self) -> usize {
+    pub(super) fn height(&self) -> usize {
         (self.height_and_removed.load(Ordering::Relaxed) & HEIGHT_MASK) as usize
     }
 
-    pub(crate) fn refs(&self) -> usize {
+    pub(super) fn refs(&self) -> usize {
         (self.height_and_removed.load(Ordering::SeqCst) & !REMOVED_MASK)
             >> (HEIGHT_BITS + 1)
     }
 
-    pub(crate) fn add_ref(&self) -> usize {
+    pub(super) fn add_ref(&self) -> usize {
         let refs = self
             .height_and_removed
             .fetch_add(1 << (HEIGHT_BITS + 1), Ordering::SeqCst)
@@ -148,7 +148,7 @@ impl<K, V> Node<K, V> {
         refs
     }
 
-    pub(crate) fn try_add_ref(&self) -> Result<usize, usize> {
+    pub(super) fn try_add_ref(&self) -> Result<usize, usize> {
         self.height_and_removed
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |o| {
                 if (o & !REMOVED_MASK) >> (HEIGHT_BITS + 1) == 0 {
@@ -160,13 +160,13 @@ impl<K, V> Node<K, V> {
             .map(|now| ((now & !REMOVED_MASK) >> (HEIGHT_BITS + 1)) + 1)
     }
 
-    pub(crate) fn sub_ref(&self) -> usize {
+    pub(super) fn sub_ref(&self) -> usize {
         self.height_and_removed
             .fetch_sub(1 << (HEIGHT_BITS + 1), Ordering::SeqCst)
             as usize
     }
 
-    pub(crate) fn try_sub_ref(&self) -> Result<usize, usize> {
+    pub(super) fn try_sub_ref(&self) -> Result<usize, usize> {
         self.height_and_removed
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |o| {
                 if (o & !REMOVED_MASK) >> (HEIGHT_BITS + 1) == 0 {
@@ -177,7 +177,7 @@ impl<K, V> Node<K, V> {
             .map(|now| ((now & !REMOVED_MASK) >> (HEIGHT_BITS + 1)) - 1)
     }
 
-    pub(crate) fn removed(&self) -> bool {
+    pub(super) fn removed(&self) -> bool {
         self.height_and_removed.load(Ordering::Acquire).leading_zeros() == 0
     }
 
@@ -208,10 +208,14 @@ impl<K, V> Node<K, V> {
             .map_err(|_| ())
     }
 
-    pub(crate) fn tag_levels(&self, tag: usize) -> Result<usize, usize> {
+    pub(super) fn tag_levels(&self, tag: usize) -> Result<usize, usize> {
         for level in (0 .. self.height()).rev() {
-            if let Err(o_tag) = self.levels[level].compare_exchange_tag(0, tag)
-            {
+            if let Err(o_tag) = self.levels[level].compare_exchange_tag(
+                0,
+                tag,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
                 return Err(o_tag);
             }
         }
