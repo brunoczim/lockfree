@@ -8,7 +8,7 @@ mod tagged;
 use std::{
     fmt::Debug,
     ptr::NonNull,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{fence, AtomicUsize, Ordering},
 };
 
 use self::{
@@ -193,6 +193,8 @@ where
         start_height: usize,
     ) -> Result<(), usize> {
         // iterate over all the levels in the new nodes pointer tower
+        fence(Ordering::Release);
+
         for i in start_height .. new_node.height() {
             let prev = &previous_nodes[i];
 
@@ -231,7 +233,7 @@ where
                 .compare_exchange(
                     curr_next,
                     next_ptr,
-                    Ordering::AcqRel,
+                    Ordering::Acquire,
                     Ordering::Relaxed,
                 )
                 .is_err()
@@ -255,7 +257,7 @@ where
                 .compare_exchange(
                     next_ptr,
                     new_node.as_ptr(),
-                    Ordering::AcqRel,
+                    Ordering::Relaxed,
                     Ordering::Relaxed,
                 )
                 .is_err()
@@ -337,6 +339,8 @@ where
         //
         // 1.-3. Some as method and covered by method caller.
         // 4. We are not unlinking the head. - Covered by previous safety check.
+        fence(Ordering::Release);
+
         for (i, prev) in previous_nodes.iter().enumerate().take(height).rev() {
             let (new_next, _tag) = node.levels[i].load_decomposed();
 
@@ -349,23 +353,14 @@ where
             // Performs a compare_exchange, expecting the old value of the
             // pointer to be the current node. If it is not, we
             // cannot make any reasonable progress, so we search again.
-            if (i == height
-                && prev.levels[i]
-                    .compare_exchange(
-                        node.as_ptr(),
-                        new_next,
-                        Ordering::AcqRel,
-                        Ordering::Relaxed,
-                    )
-                    .is_err())
-                || prev.levels[i]
-                    .compare_exchange(
-                        node.as_ptr(),
-                        new_next,
-                        Ordering::Relaxed,
-                        Ordering::Relaxed,
-                    )
-                    .is_err()
+            if prev.levels[i]
+                .compare_exchange(
+                    node.as_ptr(),
+                    new_next,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
+                .is_err()
             {
                 return Err(i + 1);
             }
