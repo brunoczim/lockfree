@@ -264,7 +264,7 @@ impl<T> ThreadLocal<T> {
                     // pointer.
                     (new_tbl_ptr.as_ptr() as usize | 1) as *mut (),
                     AcqRel,
-                    Release,
+                    Acquire,
                 ) {
                     Ok(_) => {
                         // If the old node was still stored, we succeeded.
