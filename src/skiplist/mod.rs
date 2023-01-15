@@ -20,8 +20,10 @@ const HEIGHT_BITS: usize = 5;
 const HEIGHT: usize = 1 << HEIGHT_BITS;
 const HEIGHT_MASK: usize = (1 << (HEIGHT_BITS + 1)) - 1;
 
-/// A lock-free skip list. Implemented using dynamically-allocated,
-/// multi-leveled `Node` towers.
+/// A lock-free skip list, similar in its applications to
+/// [BTreeMap](std::collections::BTreeMap)
+/// and [BTreeSet](std::collections::BTreeSet). Implemented using
+/// dynamically-allocated, multi-leveled `Node` towers.
 ///
 /// # Design
 /// The SkipList consists of a sorted, multi-leveled linked list, where not
