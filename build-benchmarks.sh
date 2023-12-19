@@ -69,20 +69,26 @@ cargo run --bin mpmc --release >> $FILE || exit 1
 echo '```' >> $FILE
 echo '' >> $FILE
 
-echo '## REQUEST PROGRAM' >> $FILE
-echo '```' >> $FILE
-cargo run --bin request --release >> $FILE || exit 1
-echo '```' >> $FILE
-echo '' >> $FILE
+#	echo '## REQUEST PROGRAM' >> $FILE
+#	echo '```' >> $FILE
+#	cargo run --bin request --release >> $FILE || exit 1
+#	echo '```' >> $FILE
+#	echo '' >> $FILE
 
-echo '## MESSAGE REVERB PROGRAM' >> $FILE
-echo '```' >> $FILE
-cargo run --bin reverb --release >> $FILE || exit 1
-echo '```' >> $FILE
-echo '' >> $FILE
+#	echo '## MESSAGE REVERB PROGRAM' >> $FILE
+#	echo '```' >> $FILE
+#	cargo run --bin reverb --release >> $FILE || exit 1
+#	echo '```' >> $FILE
+#	echo '' >> $FILE
 
-echo '## HASH MINING' >> $FILE
+#	echo '## HASH MINING' >> $FILE
+#	echo '```' >> $FILE
+#	cargo run --bin mining --release >> $FILE || exit 1
+#	echo '```' >> $FILE
+#	echo '' >> $FILE
+
+echo '## SKIPLIST' >> $FILE
 echo '```' >> $FILE
-cargo run --bin mining --release >> $FILE || exit 1
+cargo run --bin skiplist --release >> $FILE || exit 1
 echo '```' >> $FILE
 echo '' >> $FILE

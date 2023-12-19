@@ -23,6 +23,7 @@
 //! - `[x]` [Set](set::Set)
 //! - `[x]` [Stack](stack::Stack)
 //! - `[x]` [Queue](queue::Queue)
+//! - `[x]` [SkipList](skiplist::SkipList)
 //! - `[ ]` Deque
 //!
 //! # Performance Guide
@@ -54,6 +55,9 @@ pub mod map;
 
 /// A lock-free set.
 pub mod set;
+
+/// A lock-free skip list.
+pub mod skiplist;
 
 /// Collection of lock-free FIFO channels. These channels are fully asynchronous
 /// and their receivers do not provide any sort of `wait-for-message` operation.

@@ -8,6 +8,7 @@ publish = false
 lockfree = { path = "../" }
 benchsuite = { path = "benchsuite" }
 thread_local = "*"
+rand = "0.8"
 
 [workspace]
 members = ["benchsuite", "."]
@@ -55,3 +56,7 @@ path = "src/spmc.rs"
 [[bin]]
 name = "mpmc"
 path = "src/mpmc.rs"
+
+[[bin]]
+name = "skiplist"
+path = "src/skiplist.rs"

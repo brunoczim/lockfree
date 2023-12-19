@@ -46,5 +46,9 @@ path = "fuzz_targets/spmc.rs"
 name = "mpmc"
 path = "fuzz_targets/mpmc.rs"
 
+[[bin]]
+name = "skiplist"
+path = "fuzz_targets/skiplist.rs"
+
 [profile.release]
 lto = "off"
